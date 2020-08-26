@@ -18,6 +18,7 @@
 package org.keycloak.storage.ldap;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -562,12 +563,60 @@ public class LDAPStorageProvider implements UserStorageProvider,
         if(getLdapIdentityStore().getConfig().isTrustEmail()){
             imported.setEmailVerified(true);
         }
+	List<String> reversedUserDN = Arrays.asList(userDN.split(","));
+        Collections.reverse(reversedUserDN);
+        GroupModel generalGroup = null;
+        if (realm.getGroups().size() == 0 || realm.getTopLevelGroups().size() == 0) {
+            generalGroup = realm.createGroup("kali");
+        } else {
+            generalGroup = realm.getTopLevelGroups().get(0);
+        }
+        List<String> ous = new ArrayList<>();
+        for (String ou : reversedUserDN) {
+            if (ou.substring(0, 3).equalsIgnoreCase("ou=")) {
+                ous.add(ou.replace(ou.substring(0, 3), ""));
+//                logger.infof(ou + " - {0.3} " + ou.substring(0, 3) + " | " + ou.replace(ou.substring(0, 3), "") + "\n");
+            }
+        }
+        GroupModel lastGroup = null;
+        for (int i = 0; i < ous.size(); i++) {
+            if (i == 0) {
+                if (generalGroup.getName().equalsIgnoreCase(ous.get(i))) {
+                    lastGroup = generalGroup;
+                } else {
+                    GroupModel newGroup = realm.createGroup(ous.get(i));
+                    generalGroup.addChild(newGroup);
+                    lastGroup = newGroup;
+                }
+                continue;
+            }
+            GroupModel cur = searchGroupByName(lastGroup, ous.get(i));
+            if (cur == null) {
+                GroupModel newGroup = realm.createGroup(ous.get(i));
+                lastGroup.addChild(newGroup);
+                lastGroup = newGroup;
+            } else {
+                lastGroup = cur;
+            }
+        }
+        if (lastGroup != null) {
+            imported.joinGroup(lastGroup);
+        }
         logger.debugf("Imported new user from LDAP to Keycloak DB. Username: [%s], Email: [%s], LDAP_ID: [%s], LDAP Entry DN: [%s]", imported.getUsername(), imported.getEmail(),
                 ldapUser.getUuid(), userDN);
         UserModel proxy = proxy(realm, imported, ldapUser, false);
         return proxy;
     }
-
+    
+    protected GroupModel searchGroupByName(GroupModel base, String name) {
+        for (GroupModel currentGroup : base.getSubGroups()) {
+            if (currentGroup.getName().equalsIgnoreCase(name)) {
+                return currentGroup;
+            }
+        }
+        return null;
+    }
+	
     protected LDAPObject queryByEmail(RealmModel realm, String email) {
         try (LDAPQuery ldapQuery = LDAPUtils.createQueryForUserSearch(this, realm)) {
             LDAPQueryConditionsBuilder conditionsBuilder = new LDAPQueryConditionsBuilder();
